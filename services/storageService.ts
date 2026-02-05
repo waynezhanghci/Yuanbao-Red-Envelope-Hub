@@ -1,118 +1,121 @@
 
-import { InvitationCode } from '../types';
+import { InvitationCode, UserStats } from '../types';
 
-const STORAGE_KEY = 'mini_invite_codes';
-const USER_HISTORY_KEY = 'user_copy_history';
-const USER_POST_HISTORY_KEY = 'user_post_history';
-const USER_POSTED_IDS_KEY = 'user_posted_ids';
+// Changed to relative path. This requires your web server (Nginx) to proxy /api to the backend,
+// OR you must set this to your actual server IP/Domain if hosting separately.
+// For production with Nginx: '/api'
+const API_BASE = '/api';
+const USER_ID_KEY = 'mini_app_user_uuid';
 
-// 设定每日可复制上限 (根据规则图设定为 3)
 export const DAILY_LIMIT = 3;
-// 设定每日可发布上限
 export const POST_DAILY_LIMIT = 5;
 
-// Helper to get today's date string for keying history
-const getTodayKey = () => new Date().toISOString().split('T')[0];
+// Helper to get or create a persistent User ID (simulating device ID)
+const getUserId = (): string => {
+  let uuid = localStorage.getItem(USER_ID_KEY);
+  if (!uuid) {
+    uuid = crypto.randomUUID();
+    localStorage.setItem(USER_ID_KEY, uuid);
+  }
+  return uuid;
+};
+
+const getHeaders = () => ({
+  'Content-Type': 'application/json',
+  'X-User-ID': getUserId(),
+});
 
 export const storageService = {
-  getCodes: (): InvitationCode[] => {
-    const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
-  },
-
-  // Check how many codes the user has posted today
-  getTodayPostCount: (): number => {
-    const history = JSON.parse(localStorage.getItem(USER_POST_HISTORY_KEY) || '{}');
-    const today = getTodayKey();
-    return (history[today] || 0);
-  },
-
-  // Check if the code was posted by the current user
-  isOwnCode: (id: string): boolean => {
-    const postedIds = JSON.parse(localStorage.getItem(USER_POSTED_IDS_KEY) || '[]');
-    return postedIds.includes(id);
-  },
-
-  saveCode: (content: string): { success: boolean; code?: InvitationCode; error?: string } => {
-    const today = getTodayKey();
-    const postCount = storageService.getTodayPostCount();
-
-    if (postCount >= POST_DAILY_LIMIT) {
-      return { success: false, error: `今日发布次数已达上限 (${POST_DAILY_LIMIT}次)` };
+  // Fetch all codes
+  getCodes: async (): Promise<InvitationCode[]> => {
+    try {
+      const res = await fetch(`${API_BASE}/codes`, { headers: getHeaders() });
+      if (!res.ok) return [];
+      const data = await res.json();
+      // Map backend response to frontend interface
+      return data.map((item: any) => ({
+        id: item.id,
+        content: item.content,
+        remainingUses: item.remainingUses,
+        createdAt: item.createdAt,
+        isOwnCode: item.isOwn,
+        alreadyUsed: item.isUsed
+      }));
+    } catch (e) {
+      console.error("Failed to fetch codes", e);
+      return [];
     }
-
-    const codes = storageService.getCodes();
-    const newCode: InvitationCode = {
-      id: crypto.randomUUID(),
-      content,
-      remainingUses: 3,
-      createdAt: Date.now(),
-    };
-    codes.push(newCode);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(codes));
-
-    // Update post history (daily count)
-    const history = JSON.parse(localStorage.getItem(USER_POST_HISTORY_KEY) || '{}');
-    history[today] = (history[today] || 0) + 1;
-    localStorage.setItem(USER_POST_HISTORY_KEY, JSON.stringify(history));
-
-    // Update posted IDs list
-    const postedIds = JSON.parse(localStorage.getItem(USER_POSTED_IDS_KEY) || '[]');
-    postedIds.push(newCode.id);
-    localStorage.setItem(USER_POSTED_IDS_KEY, JSON.stringify(postedIds));
-
-    return { success: true, code: newCode };
   },
 
-  // Check if user has reached the daily limit
-  getTodayCopyCount: (): number => {
-    const history = JSON.parse(localStorage.getItem(USER_HISTORY_KEY) || '{}');
-    const today = getTodayKey();
-    return (history[today] || []).length;
+  // Get user stats (today's counts)
+  getUserStats: async (): Promise<UserStats> => {
+    try {
+      const res = await fetch(`${API_BASE}/user/stats`, { headers: getHeaders() });
+      if (!res.ok) throw new Error("Failed to fetch stats");
+      return await res.json();
+    } catch (e) {
+      return { todayPostCount: 0, todayClaimCount: 0, postLimit: 5, claimLimit: 3 };
+    }
   },
 
-  // Check if user has already copied a specific code
-  hasUserCopiedCode: (codeId: string): boolean => {
-    const history = JSON.parse(localStorage.getItem(USER_HISTORY_KEY) || '{}');
-    return Object.values(history).some((ids: any) => ids.includes(codeId));
+  saveCode: async (content: string): Promise<{ success: boolean; code?: InvitationCode; error?: string }> => {
+    try {
+      const id = crypto.randomUUID();
+      const res = await fetch(`${API_BASE}/codes`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ id, content })
+      });
+
+      const data = await res.json();
+      
+      if (!res.ok) {
+        return { success: false, error: data.detail || "发布失败" };
+      }
+
+      return { 
+        success: true, 
+        code: {
+          id: data.id,
+          content: data.content,
+          remainingUses: data.remainingUses,
+          createdAt: data.createdAt,
+          isOwnCode: true,
+          alreadyUsed: false
+        }
+      };
+    } catch (e) {
+      return { success: false, error: "网络错误，请重试" };
+    }
   },
 
-  useCode: (id: string): { success: boolean; code?: InvitationCode; error?: string } => {
-    const today = getTodayKey();
-    const history = JSON.parse(localStorage.getItem(USER_HISTORY_KEY) || '{}');
-    const todayList = history[today] || [];
+  useCode: async (id: string): Promise<{ success: boolean; code?: InvitationCode; error?: string }> => {
+    try {
+      const res = await fetch(`${API_BASE}/codes/${id}/claim`, {
+        method: 'POST',
+        headers: getHeaders()
+      });
 
-    // 1. Check if it is own code
-    if (storageService.isOwnCode(id)) {
-      return { success: false, error: '不能领取自己发布的邀请码' };
+      const data = await res.json();
+
+      if (!res.ok) {
+        return { success: false, error: data.detail || "领取失败" };
+      }
+
+      // Return partial update
+      return { 
+        success: true, 
+        code: {
+          id: data.id,
+          content: "", // Content not needed for update
+          remainingUses: data.remainingUses,
+          createdAt: 0,
+          isOwnCode: false,
+          alreadyUsed: true
+        }
+      };
+    } catch (e) {
+      return { success: false, error: "网络错误，请重试" };
     }
-
-    // 2. Check daily limit
-    if (todayList.length >= DAILY_LIMIT) {
-      return { success: false, error: `今日复制次数已达上限 (${DAILY_LIMIT}次)` };
-    }
-
-    // 3. Check if already copied this specific code
-    if (storageService.hasUserCopiedCode(id)) {
-      return { success: false, error: '您已经领取过该邀请码' };
-    }
-
-    const codes = storageService.getCodes();
-    const index = codes.findIndex((c) => c.id === id);
-
-    if (index !== -1 && codes[index].remainingUses > 0) {
-      // 4. Update remaining uses
-      codes[index].remainingUses -= 1;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(codes));
-
-      // 5. Record in user history
-      if (!history[today]) history[today] = [];
-      history[today].push(id);
-      localStorage.setItem(USER_HISTORY_KEY, JSON.stringify(history));
-
-      return { success: true, code: codes[index] };
-    }
-
-    return { success: false, error: '该邀请码已失效' };
   }
 };

@@ -4,35 +4,26 @@ import { InvitationCode } from '../types';
 
 interface CodeCardProps {
   code: InvitationCode;
-  onUse: () => Promise<boolean>; // Changed to Promise
+  onUse: () => boolean;
   alreadyUsed?: boolean;
   isOwnCode?: boolean;
 }
 
 export const CodeCard: React.FC<CodeCardProps> = ({ code, onUse, alreadyUsed = false, isOwnCode = false }) => {
   const [copied, setCopied] = React.useState(false);
-  const [isLoading, setIsLoading] = React.useState(false);
-  
-  // Local state to track if we just used it, combined with props
-  const [localUsed, setLocalUsed] = React.useState(false);
-  const isEffectiveUsed = alreadyUsed || localUsed;
+  const [isAlreadyUsed, setIsAlreadyUsed] = React.useState(alreadyUsed);
 
   const handleCopy = async () => {
-    if (isEffectiveUsed || isOwnCode || isLoading) return;
+    if (isAlreadyUsed || isOwnCode) return;
 
-    setIsLoading(true);
-    
-    // Call parent to check business rules (API call)
-    const success = await onUse();
-    
-    setIsLoading(false);
-
+    // Call parent to check business rules (daily limit, etc.)
+    const success = onUse();
     if (!success) return;
 
     try {
       await navigator.clipboard.writeText(code.content);
       setCopied(true);
-      setLocalUsed(true);
+      setIsAlreadyUsed(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error('Failed to copy text: ', err);
@@ -45,49 +36,47 @@ export const CodeCard: React.FC<CodeCardProps> = ({ code, onUse, alreadyUsed = f
   });
 
   return (
-    <div className="w-full mb-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-      <div className="w-full bg-white rounded-2xl shadow-sm border border-slate-100 p-4 transition-all hover:shadow-md">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex flex-col gap-1 min-w-0 flex-1">
-            <span className={`font-mono font-bold text-[13px] leading-relaxed line-clamp-2 break-words select-all transition-colors ${isEffectiveUsed || isOwnCode ? 'text-slate-300' : 'text-slate-900'}`}>
+    <div className="w-full mb-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
+      <div className="w-full bg-white rounded-xl shadow-sm border border-slate-100 p-3 transition-all hover:shadow-md">
+        
+        {/* Top Row: Flex container with items-stretch to match heights */}
+        <div className="flex justify-between items-stretch gap-3">
+          {/* Text Container: Center content vertically if button is taller, or allow text to dictate height */}
+          <div className="flex-1 min-w-0 flex items-center">
+            <span className={`font-mono font-bold text-[13px] leading-relaxed line-clamp-2 break-words select-all transition-colors ${isAlreadyUsed || isOwnCode ? 'text-slate-300' : 'text-slate-900'}`}>
               {code.content}
-            </span>
-            <span className="text-[10px] text-slate-400 font-medium tracking-wider">
-              {timeString}
             </span>
           </div>
 
+          {/* Button: h-auto to stretch with parent, min-h-[32px] for touch target */}
           <button
             onClick={handleCopy}
-            disabled={(isEffectiveUsed && !copied) || isOwnCode || isLoading}
-            className={`flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 min-w-[80px] ${
+            disabled={isAlreadyUsed && !copied || isOwnCode}
+            className={`flex items-center justify-center gap-1 px-3 py-1 rounded-lg text-xs font-bold transition-all shrink-0 min-w-[72px] h-auto min-h-[32px] ${
               copied 
                 ? 'bg-green-100 text-green-700' 
                 : isOwnCode
                   ? 'bg-slate-50 text-slate-400 cursor-not-allowed border border-slate-100'
-                  : isEffectiveUsed 
+                  : isAlreadyUsed 
                     ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                    : isLoading
-                      ? 'bg-red-400 text-white cursor-wait'
-                      : 'bg-red-500 text-white hover:bg-red-600 active:scale-95 shadow-sm'
+                    : 'bg-red-500 text-white hover:bg-red-600 active:scale-95 shadow-sm'
             }`}
           >
-            {isLoading ? (
-               <i className="fas fa-spinner fa-spin text-[10px]"></i>
-            ) : (
-               <i className={`fas ${copied ? 'fa-check' : isOwnCode ? 'fa-user' : isEffectiveUsed ? 'fa-check-double' : 'fa-copy'} text-[10px]`}></i>
-            )}
+            <i className={`fas ${copied ? 'fa-check' : isOwnCode ? 'fa-user' : isAlreadyUsed ? 'fa-check-double' : 'fa-copy'} text-[10px]`}></i>
             <span className="whitespace-nowrap">
-              {copied ? '已复制' : isOwnCode ? '我的' : isEffectiveUsed ? '已领取' : isLoading ? '领取中' : '复制'}
+              {copied ? '已复制' : isOwnCode ? '我的' : isAlreadyUsed ? '已领取' : '复制'}
             </span>
           </button>
         </div>
         
-        <div className="flex justify-end mt-2">
-            <span className="text-[10px] text-slate-400 font-medium">
-              剩余: <span className={`${isEffectiveUsed || isOwnCode ? 'text-slate-400' : 'text-slate-700'} font-bold`}>{code.remainingUses}</span>
-            </span>
+        {/* Bottom Row: Time (Left) and Remaining Count (Right) */}
+        <div className="flex items-center justify-between mt-2 text-[10px] text-slate-400 font-medium">
+          <span>{timeString}</span>
+          <span>
+            剩余: <span className={`${isAlreadyUsed || isOwnCode ? 'text-slate-400' : 'text-slate-700'} font-bold`}>{code.remainingUses}</span>
+          </span>
         </div>
+
       </div>
     </div>
   );

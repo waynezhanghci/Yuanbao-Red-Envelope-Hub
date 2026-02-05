@@ -4,58 +4,70 @@ import { InvitationCode } from './types';
 import { storageService, DAILY_LIMIT, POST_DAILY_LIMIT } from './services/storageService';
 import { CodeCard } from './components/CodeCard';
 
+// Simulated User IDs
+const USERS = {
+  HOST: 'user_host_001',
+  GUEST: 'user_guest_001'
+};
+
 const App: React.FC = () => {
+  // State for simulated user identity
+  const [currentUser, setCurrentUser] = useState<string>(USERS.GUEST); // Default to Guest
+  const [isSwitching, setIsSwitching] = useState(false);
+
   const [codes, setCodes] = useState<InvitationCode[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [todayCount, setTodayCount] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const isFirstLoad = useRef(true);
 
-  // Load initial data from API
-  const loadData = async () => {
-    const [fetchedCodes, stats] = await Promise.all([
-      storageService.getCodes(),
-      storageService.getUserStats()
-    ]);
-    setCodes(fetchedCodes);
-    setTodayCount(stats.todayClaimCount);
-  };
+  // Load data based on current user
+  const loadData = useCallback(() => {
+    const loadedCodes = storageService.getCodes();
+    // Filter out 0 uses codes for display cleanliness, or keep them to show "empty"
+    setCodes(loadedCodes.filter(c => c.remainingUses > 0));
+    setTodayCount(storageService.getTodayCopyCount(currentUser));
+  }, [currentUser]);
 
+  // Initial load and reload when user changes
   useEffect(() => {
-    // Initial load
-    loadData().then(() => {
-      // Only scroll on very first load
-      if (isFirstLoad.current) {
-        scrollToBottom();
-        isFirstLoad.current = false;
-      }
-    });
+    loadData();
+  }, [loadData]);
 
-    // Poll every 30 seconds
-    const interval = setInterval(loadData, 30000);
-    return () => clearInterval(interval);
-  }, []);
+  // Handle User Switch
+  const toggleUser = () => {
+    setIsSwitching(true);
+    // Add a small delay to simulate context switch visual
+    setTimeout(() => {
+      const newUser = currentUser === USERS.HOST ? USERS.GUEST : USERS.HOST;
+      setCurrentUser(newUser);
+      setIsSwitching(false);
+      // Auto scroll to bottom when switching to see latest content context
+      setTimeout(scrollToBottom, 100);
+    }, 300);
+  };
 
   // Auto-scroll logic
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
-      // Use setTimeout to ensure DOM has updated
-      setTimeout(() => {
-        scrollRef.current?.scrollTo({
-          top: scrollRef.current.scrollHeight,
-          behavior: 'smooth'
-        });
-      }, 100);
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   }, []);
 
-  const handlePost = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isSubmitting) return;
+  // Scroll only on initial load or new code added (not on every user switch unless intentional)
+  useEffect(() => {
+    if (!isSwitching) {
+       scrollToBottom();
+    }
+  }, [codes.length, scrollToBottom, isSwitching]);
 
+  const handlePost = (e: React.FormEvent) => {
+    e.preventDefault();
     const cleanValue = inputValue.trim();
+    
     if (!cleanValue) return;
 
     // 1. Length Check
@@ -73,20 +85,31 @@ const App: React.FC = () => {
       return;
     }
 
-    setIsSubmitting(true);
+    const extractedCode = match[0];
 
-    // 3. API Call
-    const result = await storageService.saveCode(cleanValue);
-    
-    setIsSubmitting(false);
+    // 3. Daily Post Limit Check
+    const todayPostCount = storageService.getTodayPostCount(currentUser);
+    if (todayPostCount >= POST_DAILY_LIMIT) {
+      showError(`发布失败：每日最多发布 ${POST_DAILY_LIMIT} 条邀请码`);
+      return;
+    }
 
+    // 4. Duplicate Detection
+    const isDuplicate = codes.some(c => {
+      const existingMatch = c.content.match(codeRegex);
+      return existingMatch && existingMatch[0] === extractedCode;
+    });
+
+    if (isDuplicate) {
+      showError("该邀请码已在列表中");
+      return;
+    }
+
+    const result = storageService.saveCode(cleanValue, currentUser);
     if (result.success && result.code) {
-      // Optimistic update
       setCodes(prev => [...prev, result.code!]);
       setInputValue('');
       setError(null);
-      // UX Improvement: Only auto-scroll when *I* post
-      scrollToBottom();
     } else {
       showError(result.error || "发布失败");
     }
@@ -97,20 +120,17 @@ const App: React.FC = () => {
     setTimeout(() => setError(null), 4000);
   };
 
-  const handleUseCode = async (id: string) => {
-    const result = await storageService.useCode(id);
+  const handleUseCode = (id: string) => {
+    const result = storageService.useCode(id, currentUser);
     
     if (result.success && result.code) {
       const updated = result.code;
-      const stats = await storageService.getUserStats();
-      setTodayCount(stats.todayClaimCount);
-
-      setCodes(prev => {
-        if (updated!.remainingUses === 0) {
-           return prev.filter(c => c.id !== id);
-        }
-        return prev.map(c => c.id === id ? { ...c, ...updated } : c);
-      });
+      setTodayCount(storageService.getTodayCopyCount(currentUser));
+      if (updated.remainingUses === 0) {
+        setCodes(prev => prev.filter(c => c.id !== id));
+      } else {
+        setCodes(prev => prev.map(c => c.id === id ? updated : c));
+      }
       return true;
     } else {
       if (result.error) showError(result.error);
@@ -126,22 +146,54 @@ const App: React.FC = () => {
   };
 
   const todayDateStr = getBeijingDateString();
+  const isHost = currentUser === USERS.HOST;
 
   return (
-    <div className="flex flex-col h-screen max-w-2xl mx-auto border-x border-slate-200 bg-white shadow-2xl">
+    <div className="flex flex-col h-screen max-w-2xl mx-auto border-x border-slate-200 bg-white shadow-2xl relative">
+      
+      {/* Switch Overlay Transition */}
+      {isSwitching && (
+        <div className="absolute inset-0 z-50 bg-white/50 backdrop-blur-sm flex items-center justify-center">
+          <div className="bg-slate-900 text-white px-4 py-2 rounded-full text-sm font-bold animate-pulse">
+            切换身份中...
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="px-4 py-3 bg-white/95 backdrop-blur-md border-b border-slate-100 sticky top-0 z-10 shadow-sm text-slate-900">
         <div className="relative flex items-center justify-between h-8">
-          <button className="flex items-center justify-center w-8 h-8 -ml-2 text-slate-600 hover:text-slate-900 active:scale-95 transition-transform">
-            <i className="fas fa-chevron-left text-lg"></i>
-          </button>
-
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-baseline gap-1">
-             <span className="font-bold text-[15px]">元宝红包口令贴吧</span>
-             <span className="text-xs text-slate-500 font-medium">[{todayDateStr}]</span>
+          
+          {/* Left: Avatar Switcher */}
+          <div className="flex items-center gap-1">
+            <button className="flex items-center justify-center w-6 h-8 -ml-2 text-slate-600 hover:text-slate-900 active:scale-95 transition-transform">
+              <i className="fas fa-chevron-left text-lg"></i>
+            </button>
+            
+            {/* User Identity Toggle (Compacted) */}
+            <button 
+              onClick={toggleUser}
+              className={`flex items-center gap-1 pl-1 pr-2 py-1 rounded-full text-[10px] font-bold transition-all border ${
+                isHost 
+                  ? 'bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100' 
+                  : 'bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100'
+              }`}
+            >
+              <div className={`w-5 h-5 rounded-full flex items-center justify-center text-white ${isHost ? 'bg-amber-500' : 'bg-indigo-500'}`}>
+                <i className={`fas ${isHost ? 'fa-user-tie' : 'fa-user'} text-[10px]`}></i>
+              </div>
+              <span className="whitespace-nowrap">{isHost ? '主态' : '客态'}</span>
+            </button>
           </div>
 
-          <div className="flex items-center text-xs text-slate-500 font-medium">
+          {/* Center: Title */}
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-baseline gap-1 pointer-events-none">
+             <span className="font-bold text-[15px] whitespace-nowrap">元宝红包口令贴吧</span>
+             <span className="text-xs text-slate-500 font-medium whitespace-nowrap hidden sm:inline">[{todayDateStr}]</span>
+          </div>
+
+          {/* Right: Count */}
+          <div className="flex items-center text-xs text-slate-500 font-medium whitespace-nowrap ml-2">
             已领 <span className={`ml-1 font-bold text-sm ${todayCount >= DAILY_LIMIT ? 'text-red-500' : 'text-slate-800'}`}>
               {todayCount}
             </span><span className="text-slate-400">/{DAILY_LIMIT}</span>
@@ -156,8 +208,7 @@ const App: React.FC = () => {
       >
         {codes.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-400 opacity-60">
-            <p className="font-medium">暂无有效红包码</p>
-            <p className="text-xs mt-1">分享你的口令，大家一起领</p>
+            <p className="font-medium">共享元宝红包口令</p>
           </div>
         ) : (
           <>
@@ -166,8 +217,8 @@ const App: React.FC = () => {
                 key={code.id} 
                 code={code} 
                 onUse={() => handleUseCode(code.id)}
-                alreadyUsed={code.alreadyUsed}
-                isOwnCode={code.isOwnCode}
+                alreadyUsed={storageService.hasUserCopiedCode(code.id, currentUser)}
+                isOwnCode={storageService.isOwnCode(code.id, currentUser)}
               />
             ))}
             <div className="h-4 w-full" />
@@ -188,18 +239,17 @@ const App: React.FC = () => {
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="粘贴元宝口令"
-            disabled={isSubmitting}
+            placeholder="粘贴红包口令"
             className={`w-full pl-4 pr-24 py-4 bg-slate-50 border rounded-2xl focus:outline-none focus:ring-4 transition-all text-sm font-medium ${
               error ? 'border-red-400 focus:ring-red-500/10' : 'border-slate-200 focus:ring-red-500/10 focus:border-red-500'
             }`}
           />
           <button
             type="submit"
-            disabled={!inputValue.trim() || isSubmitting}
+            disabled={!inputValue.trim()}
             className="absolute right-2 top-2 bottom-2 px-6 bg-red-500 text-white rounded-xl text-xs font-bold hover:bg-red-600 active:scale-95 disabled:opacity-50 disabled:active:scale-100 transition-all shadow-lg shadow-red-100 flex items-center justify-center gap-2"
           >
-            {isSubmitting ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-paper-plane"></i>}
+            <i className="fas fa-paper-plane"></i>
             发布
           </button>
         </form>
